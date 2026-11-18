@@ -12,7 +12,7 @@ import (
 const sniffCap = 1 << 20
 
 func readSniffPrefix(r io.ReaderAt, size int64) ([]byte, bool) {
-	if size < 0 {
+	if size <= 0 {
 		return nil, false
 	}
 	n := size
@@ -20,13 +20,59 @@ func readSniffPrefix(r io.ReaderAt, size int64) ([]byte, bool) {
 		n = sniffCap
 	}
 	buf := make([]byte, n)
-	if _, err := r.ReadAt(buf, 0); err != nil && err != io.EOF {
+	read, err := r.ReadAt(buf, 0)
+	if err != nil && err != io.EOF {
 		return nil, false
+	}
+	if read <= 0 {
+		return nil, false
+	}
+	buf = buf[:read]
+	// The cap can split a rune. A byte that cannot start UTF-8 stays for utf8.Valid.
+	if size > sniffCap && int64(len(buf)) >= sniffCap {
+		buf = trimPartialTrailingRune(buf)
+		if len(buf) == 0 {
+			return nil, false
+		}
 	}
 	if bytes.Contains(buf, []byte{0}) || !utf8.Valid(buf) {
 		return nil, false
 	}
 	return buf, true
+}
+
+func trimPartialTrailingRune(buf []byte) []byte {
+	end := len(buf)
+	start := end - (utf8.UTFMax - 1)
+	if start < 0 {
+		start = 0
+	}
+	for i := end - 1; i >= start; i-- {
+		if !utf8.RuneStart(buf[i]) {
+			continue
+		}
+		declared := leadByteRuneLen(buf[i])
+		if declared > 1 && declared > end-i {
+			return buf[:i]
+		}
+		return buf
+	}
+	return buf
+}
+
+func leadByteRuneLen(b byte) int {
+	switch {
+	case b&0x80 == 0x00:
+		return 1
+	case b&0xE0 == 0xC0:
+		return 2
+	case b&0xF0 == 0xE0:
+		return 3
+	case b&0xF8 == 0xF0:
+		return 4
+	default:
+		return 0
+	}
 }
 
 func looksLikeHTML(prefix []byte) bool {
