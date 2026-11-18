@@ -1,0 +1,47 @@
+{
+  "capabilities": [
+    {
+      "id": "octoconv.convert.pandoc",
+      "version": 1,
+      "legacy": {"operation": "convert", "engine": "pandoc"},
+      "client_operation": "convert",
+      "inputs": [{"role": "source", "min": 1, "max": 1}],
+      "outputs": [{"role": "primary", "min": 1, "max": 1}],
+      "parameter_schema": {},
+      "formats": [
+        {"from": "md", "to": "html"},
+        {"from": "md", "to": "docx"},
+        {"from": "md", "to": "epub"},
+        {"from": "md", "to": "rst"},
+        {"from": "md", "to": "org"},
+        {"from": "md", "to": "latex"},
+        {"from": "rst", "to": "html"},
+        {"from": "rst", "to": "docx"},
+        {"from": "rst", "to": "epub"},
+        {"from": "rst", "to": "md"},
+        {"from": "org", "to": "html"},
+        {"from": "org", "to": "docx"},
+        {"from": "org", "to": "epub"},
+        {"from": "org", "to": "md"},
+        {"from": "latex", "to": "html"},
+        {"from": "latex", "to": "docx"},
+        {"from": "latex", "to": "epub"},
+        {"from": "latex", "to": "md"},
+        {"from": "html", "to": "md"},
+        {"from": "html", "to": "docx"},
+        {"from": "html", "to": "epub"},
+        {"from": "html", "to": "rst"},
+        {"from": "html", "to": "latex"},
+        {"from": "docx", "to": "md"},
+        {"from": "docx", "to": "html"},
+        {"from": "docx", "to": "rst"},
+        {"from": "docx", "to": "org"},
+        {"from": "docx", "to": "latex"},
+        {"from": "docx", "to": "epub"},
+        {"from": "epub", "to": "md"},
+        {"from": "epub", "to": "html"},
+        {"from": "epub", "to": "docx"}
+      ]
+    }
+  ]
+}
