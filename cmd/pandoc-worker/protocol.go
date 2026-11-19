@@ -39,6 +39,8 @@ const (
 	terminalReportTimeout = 5 * time.Second
 	helloTimeout          = 10 * time.Second
 	pullGrace             = 5 * time.Second
+
+	protocolVersion = 2
 )
 
 var (
@@ -360,7 +362,7 @@ func heartbeatEvery(seconds int) time.Duration {
 }
 
 func (c *protocolClient) heartbeatLoop(ctx context.Context) {
-	body := []byte(`{"protocol_version":1}`)
+	body := []byte(`{"protocol_version":2}`)
 	timer := time.NewTimer(c.beatEvery)
 	defer timer.Stop()
 	for {
@@ -513,7 +515,7 @@ func (c *protocolClient) deleteSession(ctx context.Context) error {
 		c.coreHTTP,
 		http.MethodDelete,
 		target,
-		[]byte(`{"protocol_version":1}`),
+		[]byte(`{"protocol_version":2}`),
 		c.sessionToken,
 		"",
 		"",
@@ -553,7 +555,7 @@ type helloRequestJSON struct {
 
 func (c *protocolClient) hello(ctx context.Context) (helloJSON, error) {
 	body, err := json.Marshal(helloRequestJSON{
-		ProtocolVersion: 1,
+		ProtocolVersion: protocolVersion,
 		WorkerID:        c.workerID.String(),
 		ManifestSHA256:  c.manifestSHA,
 		FreeSlots:       c.freeSlots,
@@ -592,17 +594,18 @@ type fileLinkJSON struct {
 }
 
 type assignmentJSON struct {
-	JobID             string         `json:"job_id"`
-	StepID            string         `json:"step_id"`
-	AttemptID         string         `json:"attempt_id"`
-	AttemptToken      string         `json:"attempt_token"`
-	CapabilityID      string         `json:"capability_id"`
-	CapabilityVersion int            `json:"capability_version"`
-	AttemptDeadline   string         `json:"attempt_deadline"`
-	LeaseExpiresAt    string         `json:"lease_expires_at"`
-	Limits            limitsJSON     `json:"limits"`
-	Inputs            []fileLinkJSON `json:"inputs"`
-	Outputs           []fileLinkJSON `json:"outputs"`
+	JobID             string          `json:"job_id"`
+	StepID            string          `json:"step_id"`
+	AttemptID         string          `json:"attempt_id"`
+	AttemptToken      string          `json:"attempt_token"`
+	CapabilityID      string          `json:"capability_id"`
+	CapabilityVersion int             `json:"capability_version"`
+	AttemptDeadline   string          `json:"attempt_deadline"`
+	LeaseExpiresAt    string          `json:"lease_expires_at"`
+	Limits            limitsJSON      `json:"limits"`
+	Inputs            []fileLinkJSON  `json:"inputs"`
+	Outputs           []fileLinkJSON  `json:"outputs"`
+	Parameters        json.RawMessage `json:"parameters,omitempty"`
 }
 
 type limitsJSON struct {
@@ -623,7 +626,7 @@ func (c *protocolClient) pull(ctx context.Context) (pullResponseJSON, error) {
 		wait = 20
 	}
 	body, err := json.Marshal(pullRequestJSON{
-		ProtocolVersion: 1,
+		ProtocolVersion: protocolVersion,
 		PullRequestID:   uuid.NewString(),
 		FreeSlots:       c.freeSlots,
 		WaitSeconds:     wait,
@@ -693,6 +696,10 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 	if err != nil {
 		return c.fail(ctx, asgn, "engine_error", "assignment")
 	}
+	opts, err := assignmentParameters(asgn.Parameters)
+	if err != nil {
+		return c.fail(ctx, asgn, "engine_error", "assignment")
+	}
 
 	bounded, cancelDeadline := context.WithDeadline(ctx, deadline)
 	attemptCtx, cancelAttempt := context.WithCancelCause(bounded)
@@ -735,7 +742,7 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 		return err
 	}
 
-	produced, err := c.convert(attemptCtx, in.Format, out.Format, src, deadline, asgn.Limits.MaxOutputBytes)
+	produced, err := c.convert(attemptCtx, in.Format, out.Format, src, deadline, asgn.Limits.MaxOutputBytes, opts)
 	if done, stopErr := c.alreadyStopped(ctx, &flag); done {
 		return stopErr
 	}
@@ -768,7 +775,7 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 		return nil
 	}
 	completeBody, err := json.Marshal(completeJSON{
-		ProtocolVersion: 1,
+		ProtocolVersion: protocolVersion,
 		Artifacts:       artifacts,
 	})
 	if err != nil {
@@ -801,6 +808,21 @@ func artifactFor(role string, ordinal int, format string, body []byte) artifactJ
 	}
 }
 
+func assignmentParameters(raw json.RawMessage) (map[string]any, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || bytes.Equal(trimmed, []byte("{}")) {
+		return nil, nil
+	}
+	var opts map[string]any
+	if err := json.Unmarshal(trimmed, &opts); err != nil {
+		return nil, err
+	}
+	if len(opts) == 0 {
+		return nil, nil
+	}
+	return opts, nil
+}
+
 func assignmentOutputs(links []fileLinkJSON) (fileLinkJSON, bool) {
 	if len(links) != 1 {
 		return fileLinkJSON{}, false
@@ -812,7 +834,7 @@ func assignmentOutputs(links []fileLinkJSON) (fileLinkJSON, bool) {
 	return link, true
 }
 
-func (c *protocolClient) convert(ctx context.Context, from, to string, src []byte, deadline time.Time, maxOut int64) ([]byte, error) {
+func (c *protocolClient) convert(ctx context.Context, from, to string, src []byte, deadline time.Time, maxOut int64, opts map[string]any) ([]byte, error) {
 	lookup := c.lookupOp
 	if lookup == nil {
 		lookup = convert.Default.LookupOp
@@ -840,7 +862,7 @@ func (c *protocolClient) convert(ctx context.Context, from, to string, src []byt
 	}
 	convertCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	if err := conv.Convert(convertCtx, inPath, outPath, nil); err != nil {
+	if err := conv.Convert(convertCtx, inPath, outPath, opts); err != nil {
 		return nil, err
 	}
 	return readLimitedJobFile(outPath, maxOut)
@@ -1073,7 +1095,7 @@ func (c *protocolClient) renewUntil(attempt context.Context, asgn assignmentJSON
 }
 
 func (c *protocolClient) renew(ctx context.Context, asgn assignmentJSON) (time.Time, controlJSON, error) {
-	body := []byte(`{"protocol_version":1}`)
+	body := []byte(`{"protocol_version":2}`)
 	raw, err := c.postCore(
 		ctx,
 		"/worker/v1/attempts/"+url.PathEscape(asgn.AttemptID)+"/lease",
@@ -1123,7 +1145,7 @@ func (c *protocolClient) postProgress(ctx context.Context, asgn assignmentJSON, 
 	if percent < 0 || percent > 99 {
 		return errors.New("progress")
 	}
-	body, err := json.Marshal(progressJSON{ProtocolVersion: 1, Percent: percent})
+	body, err := json.Marshal(progressJSON{ProtocolVersion: protocolVersion, Percent: percent})
 	if err != nil {
 		return err
 	}
@@ -1155,7 +1177,7 @@ func (c *protocolClient) fail(ctx context.Context, asgn assignmentJSON, code, me
 	if message == "" {
 		message = "conversion failed"
 	}
-	body, err := json.Marshal(failJSON{ProtocolVersion: 1, EngineCode: code, Message: message})
+	body, err := json.Marshal(failJSON{ProtocolVersion: protocolVersion, EngineCode: code, Message: message})
 	if err != nil {
 		return err
 	}
@@ -1185,7 +1207,7 @@ func (c *protocolClient) postStopped(ctx context.Context, asgn assignmentJSON, r
 	}
 	notify, cancel := context.WithTimeout(ctx, stoppedNotifyTimeout)
 	defer cancel()
-	body, err := json.Marshal(stoppedJSON{ProtocolVersion: 1, Reason: reason})
+	body, err := json.Marshal(stoppedJSON{ProtocolVersion: protocolVersion, Reason: reason})
 	if err != nil {
 		return err
 	}

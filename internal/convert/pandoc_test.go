@@ -110,32 +110,37 @@ func TestConvertRejectsOptionsAndUnknownPairsBeforeRun(t *testing.T) {
 	if err := os.WriteFile(in, []byte("# hi\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	var got []string
 	called := false
-	c := &PandocConverter{MaxInputBytes: 1 << 20, run: func(context.Context, string, ...string) error {
+	c := &PandocConverter{MaxInputBytes: 1 << 20, run: func(_ context.Context, _ string, args ...string) error {
 		called = true
+		got = append([]string(nil), args...)
 		return os.WriteFile(out, []byte("<!doctype html><html></html>"), 0o600)
 	}}
-	rejected := []map[string]any{
-		{"standalone": true},
-		{"toc": true},
-		{"number_sections": true},
-		{"section_divs": true},
-		{"wrap": "auto"},
-		{"wrap": "none"},
-		{"wrap": "preserve"},
-		{"wrap": "sideways"},
-		{"language": "eng"},
-	}
-	for _, opts := range rejected {
+	for _, opts := range []map[string]any{{"wrap": "sideways"}, {"language": "eng"}} {
+		called = false
 		err := c.Convert(context.Background(), in, out, opts)
-		if err == nil {
-			t.Fatalf("accepted %v", opts)
+		if err == nil || called {
+			t.Fatalf("accepted %v err %v called %v", opts, err, called)
 		}
-		if opts["wrap"] == "sideways" || opts["language"] != nil {
-			continue
-		}
-		if !errors.Is(err, ErrOptionsRejected) {
-			t.Fatalf("opts %v err %v", opts, err)
+	}
+	accepted := []struct {
+		opts map[string]any
+		flag string
+	}{
+		{map[string]any{"standalone": true}, "--standalone"},
+		{map[string]any{"toc": true}, "--toc"},
+		{map[string]any{"number_sections": true}, "--number-sections"},
+		{map[string]any{"section_divs": true}, "--section-divs"},
+		{map[string]any{"wrap": "auto"}, "--wrap=auto"},
+		{map[string]any{"wrap": "none"}, "--wrap=none"},
+		{map[string]any{"wrap": "preserve"}, "--wrap=preserve"},
+	}
+	for _, tc := range accepted {
+		called = false
+		err := c.Convert(context.Background(), in, out, tc.opts)
+		if err != nil || !called || !containsArg(got, tc.flag) {
+			t.Fatalf("opts %v err %v called %v args %v", tc.opts, err, called, got)
 		}
 	}
 	for _, opts := range []map[string]any{nil, {}, {"standalone": false}, {"wrap": ""}, {"toc": false, "section_divs": false}} {
