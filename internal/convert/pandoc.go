@@ -22,6 +22,7 @@ type commandRunner func(ctx context.Context, name string, args ...string) error
 type PandocConverter struct {
 	MaxInputBytes int64
 	run           commandRunner
+	sandbox       *engineSandbox
 }
 
 var live = &PandocConverter{MaxInputBytes: DefaultMaxInputBytes}
@@ -179,11 +180,25 @@ func (c *PandocConverter) Convert(ctx context.Context, inPath, outPath string, o
 	if err := enforcePandocInputSize(inPath, limit); err != nil {
 		return err
 	}
-	run := c.run
-	if run == nil {
-		run = runCommand
+	args := pandocConvertArgs(src, tgt, inPath, outPath, parsed)
+	if c.run != nil {
+		if err := c.run(ctx, "pandoc", args...); err != nil {
+			return err
+		}
+		return validatePandocOutput(tgt, outPath)
 	}
-	if err := run(ctx, "pandoc", pandocConvertArgs(src, tgt, inPath, outPath, parsed)...); err != nil {
+	if c.sandbox.confines() {
+		ex := c.jobExec(filepath.Dir(outPath))
+		cmdName, cmdArgs, err := ex.sandbox.wrapEngine("pandoc", ex.spec, args)
+		if err != nil {
+			return err
+		}
+		if err := runCommandEnv(ctx, ex.env, cmdName, cmdArgs...); err != nil {
+			return ex.sandbox.sandboxFault(err)
+		}
+		return validatePandocOutput(tgt, outPath)
+	}
+	if err := runCommand(ctx, "pandoc", args...); err != nil {
 		return err
 	}
 	return validatePandocOutput(tgt, outPath)

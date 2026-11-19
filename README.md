@@ -6,6 +6,6 @@ The process reads `PANDOC_PROTOCOL_CORE_URL`, `PANDOC_PROTOCOL_CLIENT_CERT`, `PA
 
 `schema/manifest-pandoc-convert.json` is capability `octoconv.convert.pandoc`. It names the 32 pairs in source order. `latex` to `pdf` is not one of them.
 
-`pandoc` must be on `PATH`. The default engine budget is 65s (`PANDOC_ENGINE_TIMEOUT`). `PANDOC_MAX_INPUT_BYTES` defaults to 3145728. The output ceiling is 100 MiB. `--sandbox` is pandoc's own flag. This process does not apply Landlock. Do not move pandoc jobs onto this process until that confinement is measured.
+`pandoc` must be on `PATH`. The default engine budget is 65s (`PANDOC_ENGINE_TIMEOUT`). `PANDOC_MAX_INPUT_BYTES` defaults to 3145728. The output ceiling is 100 MiB. `--sandbox` is pandoc's own flag. Landlock confines pandoc to the job directory. `PANDOC_SANDBOX_DISABLED=true` turns that off. A sandbox setup failure exits 78. The manifest is not approved.
 
 Assignment parameters are `standalone`, `toc`, `number_sections`, `section_divs`, and `wrap` (`auto`, `none`, or `preserve`). False bools and an empty `wrap` are omitted. Unknown keys and an unknown `wrap` fail before pandoc starts. Structural targets `html`, `latex`, `docx`, and `epub` still get `--standalone` from the converter. The manifest is not approved.

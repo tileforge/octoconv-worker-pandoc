@@ -64,7 +64,14 @@ func (t *tailBuffer) String() string {
 }
 
 func runCommand(ctx context.Context, name string, args ...string) error {
+	return runCommandEnv(ctx, nil, name, args...)
+}
+
+func runCommandEnv(ctx context.Context, env []string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
+	if env != nil {
+		cmd.Env = env
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = engineWaitDelay
 	stdout := &tailBuffer{max: 1 << 20}
