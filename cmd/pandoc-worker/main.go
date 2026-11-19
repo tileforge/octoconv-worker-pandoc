@@ -8,19 +8,50 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/tileforge/octoconv-worker-pandoc/internal/convert"
+	"github.com/tileforge/octoconv-worker-pandoc/internal/sandbox"
 )
 
 func main() {
+	if sandbox.RunExecModeIfRequested(os.Args) {
+		return
+	}
 	if err := refuseLegacyStores(); err != nil {
 		log.Fatalf("pandoc protocol: %v", err)
 	}
 	applyPandocLimits()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	sandboxHelper, err := sandbox.ResolveHelper(convert.PandocSandboxDisabledEnv)
+	if err != nil {
+		log.Fatalf("pandoc sandbox: %v", err)
+	}
+	conv := convert.Current().WithSandbox(sandboxHelper)
+	convert.Default.Register(conv)
+	if len(sandboxHelper) == 0 {
+		log.Printf("%s=true: the engine can read every file in this container", convert.PandocSandboxDisabledEnv)
+	} else {
+		log.Printf("pandoc sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
+		if err := convert.StabilizeTempDir(); err != nil {
+			log.Fatalf("pandoc sandbox: %v", err)
+		}
+	}
+
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 60*time.Second)
+	proof, err := convert.PandocPreflight(preflightCtx, conv)
+	cancelPreflight()
+	if err != nil {
+		log.Fatalf("pandoc sandbox preflight: %v", err)
+	}
+	if len(sandboxHelper) > 0 {
+		log.Printf("pandoc sandbox proven: pandoc ran inside the job directory and was denied a file outside every grant (output %d bytes, no outside output)", proof.OutputBytes)
+	}
+
 	dial, err := loadProtocolDial()
 	if err != nil {
 		log.Fatalf("pandoc protocol: %v", err)
