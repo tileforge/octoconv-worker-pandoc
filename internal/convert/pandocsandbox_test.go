@@ -40,6 +40,7 @@ func TestWithSandboxEmptyHelperIsUnconfined(t *testing.T) {
 }
 
 func TestForJobGrantsTheJobDirectoryAndPandoc(t *testing.T) {
+	t.Setenv("TMPDIR", "/tmp")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "pandoc"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -59,7 +60,14 @@ func TestForJobGrantsTheJobDirectoryAndPandoc(t *testing.T) {
 			t.Errorf("missing %s in %s", want, spec)
 		}
 	}
+	jobGrant := "rw:" + job
+	if jobGrant == "rw:/" || jobGrant == "rw:/tmp" || jobGrant == "rw:/tmp/" {
+		t.Fatalf("job directory is a shared path: %s", job)
+	}
 	for _, token := range strings.Split(spec, "\n") {
+		if token == jobGrant {
+			continue
+		}
 		if token == "rw:/" || token == "rw:/tmp" || strings.HasPrefix(token, "rw:/tmp/") || token == "ro:/tmp" || token == "ro:/" {
 			t.Fatalf("spec grants a shared path: %s", spec)
 		}
