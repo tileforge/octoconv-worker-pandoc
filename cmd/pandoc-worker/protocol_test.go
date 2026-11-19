@@ -614,6 +614,109 @@ func (f fixedConverter) Convert(_ context.Context, _, outPath string, _ map[stri
 	return os.WriteFile(outPath, f.body, 0o600)
 }
 
+type recordingConverter struct {
+	opts map[string]any
+}
+
+func (recordingConverter) Pairs() []convert.Pair { return nil }
+
+func (r *recordingConverter) Convert(_ context.Context, _, outPath string, opts map[string]any) error {
+	r.opts = opts
+	return os.WriteFile(outPath, []byte("<p>ok</p>"), 0o600)
+}
+
+func TestAssignmentParameters(t *testing.T) {
+	for _, raw := range []string{"", "null", "{}", "  {}  "} {
+		opts, err := assignmentParameters(json.RawMessage(raw))
+		if err != nil || opts != nil {
+			t.Fatalf("%q -> %#v %v", raw, opts, err)
+		}
+	}
+	opts, err := assignmentParameters(json.RawMessage(`{"wrap":"none","standalone":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts["wrap"] != "none" || opts["standalone"] != true {
+		t.Fatalf("%#v", opts)
+	}
+	if _, err := assignmentParameters(json.RawMessage(`[1]`)); err == nil {
+		t.Fatal("array accepted")
+	}
+	if _, err := assignmentParameters(json.RawMessage(`"none"`)); err == nil {
+		t.Fatal("string accepted")
+	}
+}
+
+func TestPandocParametersReachTheConverter(t *testing.T) {
+	var mu sync.Mutex
+	var fails [][]byte
+	c := protocolTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte("# hi\n"))
+			return
+		}
+		if strings.Contains(r.URL.Path, "/fail") {
+			mu.Lock()
+			fails = append(fails, append([]byte(nil), body...))
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}), nil)
+	c.fileHTTP = c.coreHTTP
+	c.operation = convert.OperationConvert
+	c.engineLimit = time.Minute
+	c.leaseSeconds = 30
+	c.sessionToken = "token"
+	rec := &recordingConverter{}
+	c.lookupOp = func(op, from, to string) (convert.Converter, bool) {
+		if op != convert.OperationConvert || from != "md" || to != "html" {
+			return nil, false
+		}
+		return rec, true
+	}
+	href := c.core.String() + "/objects/md"
+	asgn := assignmentJSON{
+		AttemptID:       "md-html",
+		AttemptToken:    "attempt-token",
+		AttemptDeadline: time.Now().Add(30 * time.Minute).Format(time.RFC3339Nano),
+		LeaseExpiresAt:  time.Now().Add(time.Hour).Format(time.RFC3339Nano),
+		Limits:          limitsJSON{MaxOutputBytes: convert.MaxFileBytes},
+		Inputs:          []fileLinkJSON{{Role: "source", Ordinal: 0, Href: href, Format: "md"}},
+		Outputs:         []fileLinkJSON{{Role: "primary", Ordinal: 0, Href: href, Format: "html"}},
+		Parameters:      json.RawMessage(`{"toc":true,"wrap":"preserve"}`),
+	}
+	if err := c.runAssignment(context.Background(), asgn, controlJSON{}); err != nil {
+		t.Fatal(err)
+	}
+	if rec.opts["wrap"] != "preserve" || rec.opts["toc"] != true {
+		t.Fatalf("%#v", rec.opts)
+	}
+
+	rec.opts = map[string]any{"called": true}
+	asgn.AttemptID = "bad-parameters"
+	asgn.Parameters = json.RawMessage(`[1]`)
+	if err := c.runAssignment(context.Background(), asgn, controlJSON{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, called := rec.opts["called"]; !called {
+		t.Fatal("bad parameters reached the converter")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(fails) != 1 {
+		t.Fatalf("fail bodies %d", len(fails))
+	}
+	body := fails[0]
+	if !bytes.Contains(body, []byte(`"protocol_version":2`)) || !bytes.Contains(body, []byte(`"engine_code":"engine_error"`)) || !bytes.Contains(body, []byte(`"message":"assignment"`)) {
+		t.Fatalf("fail body %s", body)
+	}
+}
+
 func TestPandocPairsPostAnAcceptedComplete(t *testing.T) {
 	pairs := (convert.PandocConverter{}).Pairs()
 	if len(pairs) != 32 {
@@ -722,7 +825,7 @@ func acceptPandocComplete(raw []byte, puts map[string]putBody) error {
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		return os.ErrInvalid
 	}
-	if body.ProtocolVersion != 1 || len(body.Artifacts) != 1 {
+	if body.ProtocolVersion != 2 || len(body.Artifacts) != 1 {
 		return os.ErrInvalid
 	}
 	art := body.Artifacts[0]

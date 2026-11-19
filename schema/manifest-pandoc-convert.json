@@ -7,7 +7,17 @@
       "client_operation": "convert",
       "inputs": [{"role": "source", "min": 1, "max": 1}],
       "outputs": [{"role": "primary", "min": 1, "max": 1}],
-      "parameter_schema": {},
+      "parameter_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "standalone": {"type": "boolean"},
+          "toc": {"type": "boolean"},
+          "number_sections": {"type": "boolean"},
+          "section_divs": {"type": "boolean"},
+          "wrap": {"type": "string", "enum": ["auto", "none", "preserve"]}
+        }
+      },
       "formats": [
         {"from": "md", "to": "html"},
         {"from": "md", "to": "docx"},

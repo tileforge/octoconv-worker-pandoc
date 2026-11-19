@@ -1,4 +1,4 @@
-// Command pandoc-worker runs one approved pandoc capability over Worker Protocol v1.
+// Command pandoc-worker runs one approved pandoc capability over Worker Protocol v2.
 package main
 
 import (

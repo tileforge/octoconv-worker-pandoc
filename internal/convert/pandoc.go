@@ -14,9 +14,6 @@ import (
 // ErrPandocInputTooLarge means the input exceeds the configured ceiling.
 var ErrPandocInputTooLarge = errors.New("input too large")
 
-// ErrOptionsRejected means the assignment carried a client option.
-var ErrOptionsRejected = errors.New("options are not accepted")
-
 const pandocUncompressedFactor = 4
 
 type commandRunner func(ctx context.Context, name string, args ...string) error
@@ -95,10 +92,6 @@ func parsePandocOpts(opts map[string]any) (pandocOpts, error) {
 	return o, nil
 }
 
-func (o pandocOpts) isZero() bool {
-	return o == pandocOpts{}
-}
-
 func (o pandocOpts) args() []string {
 	var args []string
 	if o.Standalone {
@@ -168,7 +161,7 @@ func containsArg(args []string, flag string) bool {
 	return false
 }
 
-// Convert runs pandoc. A non-zero option fails before any program starts.
+// Convert runs pandoc. Unknown options fail before pandoc starts.
 func (c *PandocConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
 	src := NormalizeFormat(filepath.Ext(inPath))
 	tgt := NormalizeFormat(filepath.Ext(outPath))
@@ -178,9 +171,6 @@ func (c *PandocConverter) Convert(ctx context.Context, inPath, outPath string, o
 	parsed, err := parsePandocOpts(opts)
 	if err != nil {
 		return err
-	}
-	if !parsed.isZero() {
-		return ErrOptionsRejected
 	}
 	limit := c.MaxInputBytes
 	if limit <= 0 {
