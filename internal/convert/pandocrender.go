@@ -70,7 +70,7 @@ func (c PandocRenderConverter) host() PandocConverter {
 		return c.PandocConverter
 	}
 	h, ok := found.(*PandocConverter)
-	if ok && h != nil && (h.run != nil || h.sandbox != nil) {
+	if ok && h != nil {
 		return *h
 	}
 	return c.PandocConverter
@@ -433,6 +433,22 @@ func pandocSpace(b byte) bool {
 	return b == ' ' || b == '\n' || b == '\r' || b == '\t'
 }
 
+func pandocPageNumber(mid string) (int, error) {
+	if mid == "" {
+		return 0, fmt.Errorf("page number")
+	}
+	for i := 0; i < len(mid); i++ {
+		if mid[i] < '0' || mid[i] > '9' {
+			return 0, fmt.Errorf("page number")
+		}
+	}
+	n, err := strconv.Atoi(mid)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("page number")
+	}
+	return n, nil
+}
+
 func pandocRenderPages(prefix string) ([]string, error) {
 	dir := filepath.Dir(prefix)
 	base := filepath.Base(prefix)
@@ -447,8 +463,8 @@ func pandocRenderPages(prefix string) ([]string, error) {
 			continue
 		}
 		mid := strings.TrimSuffix(strings.TrimPrefix(name, base+"-"), ".png")
-		n, convErr := strconv.Atoi(mid)
-		if convErr != nil || n < 1 || strconv.Itoa(n) != mid {
+		n, convErr := pandocPageNumber(mid)
+		if convErr != nil {
 			return nil, fmt.Errorf("page name %s", name)
 		}
 		if _, ok := found[n]; ok {

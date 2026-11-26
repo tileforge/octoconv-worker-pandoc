@@ -1078,3 +1078,136 @@ func TestPandocRenderGrants(t *testing.T) {
 		t.Fatalf("engines %v", pandocEngines)
 	}
 }
+
+func TestPandocRenderZeroPaddedPages(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.md")
+	out := filepath.Join(dir, "out.png")
+	if err := os.WriteFile(in, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	white := color.NRGBA{255, 255, 255, 255}
+	c, calls := newScripted(func(_ context.Context, name string, args []string) error {
+		if err := scriptTouch(name, args); err != nil {
+			return err
+		}
+		if name != "pdftoppm" {
+			return nil
+		}
+		prefix := args[len(args)-1]
+		if err := writeSolid(prefix+"-01.png", 256, 256, white, nil); err != nil {
+			return err
+		}
+		return writeSolid(prefix+"-02.png", 256, 256, white, func(img *image.NRGBA) {
+			img.SetNRGBA(8, 8, color.NRGBA{0, 0, 0, 255})
+		})
+	})
+	if err := c.Convert(context.Background(), in, out, map[string]any{"size": 256}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("calls %d", len(*calls))
+	}
+	assertNotAllWhite(t, out)
+
+	gap := t.TempDir()
+	gapIn := filepath.Join(gap, "in.md")
+	gapOut := filepath.Join(gap, "out.png")
+	if err := os.WriteFile(gapIn, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	precreate(t, gapOut)
+	gapConv, _ := newScripted(func(_ context.Context, name string, args []string) error {
+		if err := scriptTouch(name, args); err != nil {
+			return err
+		}
+		if name != "pdftoppm" {
+			return nil
+		}
+		prefix := args[len(args)-1]
+		if err := writeSolid(prefix+"-01.png", 256, 256, white, nil); err != nil {
+			return err
+		}
+		return writeSolid(prefix+"-03.png", 256, 256, white, func(img *image.NRGBA) {
+			img.SetNRGBA(8, 8, color.NRGBA{0, 0, 0, 255})
+		})
+	})
+	if err := gapConv.Convert(context.Background(), gapIn, gapOut, map[string]any{"size": 256}); err == nil {
+		t.Fatal("gap accepted")
+	}
+	absentOutput(t, gapOut)
+
+	dup := t.TempDir()
+	prefix := filepath.Join(dup, "pages")
+	if err := writeSolid(prefix+"-1.png", 8, 8, white, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSolid(prefix+"-01.png", 8, 8, white, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pandocRenderPages(prefix); err == nil {
+		t.Fatal("duplicate accepted")
+	}
+}
+
+func TestPandocRenderInheritsInputLimit(t *testing.T) {
+	prevLimit := live.MaxInputBytes
+	prevRun := live.run
+	prevSandbox := live.sandbox
+	t.Cleanup(func() {
+		live.MaxInputBytes = prevLimit
+		live.run = prevRun
+		live.sandbox = prevSandbox
+	})
+	live.sandbox = nil
+	var calls int
+	live.run = func(context.Context, string, ...string) error {
+		calls++
+		return errors.New("stop")
+	}
+
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.md")
+	out := filepath.Join(dir, "out.png")
+	f, err := os.Create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(101); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	precreate(t, out)
+	live.MaxInputBytes = 100
+	err = (PandocRenderConverter{}).Convert(context.Background(), in, out, nil)
+	if !errors.Is(err, ErrPandocInputTooLarge) || calls != 0 {
+		t.Fatalf("err %v calls %d", err, calls)
+	}
+	absentOutput(t, out)
+
+	if err := fTruncate(in, 3145729); err != nil {
+		t.Fatal(err)
+	}
+	precreate(t, out)
+	live.MaxInputBytes = 4000000
+	calls = 0
+	err = (PandocRenderConverter{}).Convert(context.Background(), in, out, nil)
+	if errors.Is(err, ErrPandocInputTooLarge) || calls != 1 {
+		t.Fatalf("err %v calls %d", err, calls)
+	}
+	absentOutput(t, out)
+}
+
+func fTruncate(path string, size int64) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(size); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
