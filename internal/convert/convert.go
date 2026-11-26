@@ -14,6 +14,7 @@ var ErrOutputTooLarge = errors.New("output too large")
 const (
 	EnginePandoc               = "pandoc"
 	OperationConvert           = "convert"
+	OperationRender            = "render"
 	DefaultEngineTimeout       = 65 * time.Second
 	MaxFileBytes         int64 = 100 << 20
 	// DefaultMaxInputBytes is the deployed PANDOC_MAX_INPUT_BYTES value.
@@ -30,6 +31,19 @@ type Pair struct {
 type Converter interface {
 	Pairs() []Pair
 	Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error
+}
+
+type operationalConverter interface {
+	Operation() string
+}
+
+func operationOf(c Converter) string {
+	if op, ok := c.(operationalConverter); ok {
+		if name := op.Operation(); name != "" {
+			return name
+		}
+	}
+	return OperationConvert
 }
 
 // MIMEType is the content type the core stores for format.
@@ -50,6 +64,8 @@ func MIMEType(format string) string {
 		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 	case "epub":
 		return "application/epub+zip"
+	case "png":
+		return "image/png"
 	default:
 		return "application/octet-stream"
 	}
@@ -80,7 +96,7 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(c Converter) {
 	for _, pair := range c.Pairs() {
 		r.m[opKey{
-			Operation: OperationConvert,
+			Operation: operationOf(c),
 			From:      NormalizeFormat(pair.From),
 			To:        NormalizeFormat(pair.To),
 		}] = c

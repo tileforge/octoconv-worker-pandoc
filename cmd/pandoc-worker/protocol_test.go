@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"io"
@@ -903,5 +904,170 @@ func TestAttemptDeadlineStopsStalledDownload(t *testing.T) {
 		}
 	default:
 		t.Fatal("fail was not posted")
+	}
+}
+
+type renderRecorder struct {
+	opts   map[string]any
+	body   []byte
+	called int
+}
+
+func (renderRecorder) Pairs() []convert.Pair { return nil }
+
+func (r *renderRecorder) Convert(_ context.Context, _, outPath string, opts map[string]any) error {
+	r.called++
+	r.opts = opts
+	return os.WriteFile(outPath, r.body, 0o600)
+}
+
+type renderCapture struct {
+	gets    int
+	puts    int
+	putBody []byte
+	putType string
+	fails   [][]byte
+}
+
+func newRenderClient(t *testing.T) (*protocolClient, *renderCapture) {
+	t.Helper()
+	cap := &renderCapture{}
+	var mu sync.Mutex
+	c := protocolTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			mu.Lock()
+			cap.gets++
+			mu.Unlock()
+			_, _ = w.Write([]byte("hello\n"))
+		case http.MethodPut:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			mu.Lock()
+			cap.puts++
+			cap.putBody = append([]byte(nil), body...)
+			cap.putType = r.Header.Get("Content-Type")
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if strings.Contains(r.URL.Path, "/fail") {
+				mu.Lock()
+				cap.fails = append(cap.fails, append([]byte(nil), body...))
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}), nil)
+	c.fileHTTP = c.coreHTTP
+	c.operation = convert.OperationRender
+	c.engineLimit = time.Minute
+	c.leaseSeconds = 30
+	c.sessionToken = "token"
+	return c, cap
+}
+
+func renderAssignment(c *protocolClient, id string, params json.RawMessage) assignmentJSON {
+	href := c.core.String() + "/objects/" + id
+	return assignmentJSON{
+		AttemptID:       id,
+		AttemptToken:    "attempt-token",
+		AttemptDeadline: time.Now().Add(30 * time.Minute).Format(time.RFC3339Nano),
+		LeaseExpiresAt:  time.Now().Add(time.Hour).Format(time.RFC3339Nano),
+		Limits:          limitsJSON{MaxOutputBytes: convert.MaxFileBytes},
+		Inputs:          []fileLinkJSON{{Role: "source", Ordinal: 0, Href: href, Format: "md"}},
+		Outputs:         []fileLinkJSON{{Role: "primary", Ordinal: 0, Href: href, Format: "png"}},
+		Parameters:      params,
+	}
+}
+
+func TestPandocRenderManifestOperation(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "schema", "manifest-pandoc-render.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := manifestOperation(raw)
+	if err != nil || got != convert.OperationRender {
+		t.Fatalf("operation %q %v", got, err)
+	}
+	if _, err := manifestOperation([]byte(`{"capabilities":[{"legacy":{"operation":"render","engine":"html"}}]}`)); err == nil || err.Error() != "pandoc protocol manifest" {
+		t.Fatal(err)
+	}
+}
+
+func TestPandocRenderAssignmentNilOpts(t *testing.T) {
+	c, cap := newRenderClient(t)
+	rec := &renderRecorder{body: []byte("render-png")}
+	c.lookupOp = func(op, from, to string) (convert.Converter, bool) {
+		if op != convert.OperationRender || from != "md" || to != "png" {
+			return nil, false
+		}
+		return rec, true
+	}
+	for i, params := range []json.RawMessage{nil, json.RawMessage("null"), json.RawMessage("{}")} {
+		rec.opts = map[string]any{"sentinel": true}
+		before := rec.called
+		if err := c.runAssignment(context.Background(), renderAssignment(c, fmt.Sprintf("nil-%d", i), params), controlJSON{}); err != nil {
+			t.Fatal(err)
+		}
+		if rec.called != before+1 || rec.opts != nil {
+			t.Fatalf("called %d opts %#v", rec.called, rec.opts)
+		}
+		if cap.putType != "image/png" || !bytes.Equal(cap.putBody, rec.body) {
+			t.Fatalf("put %s %q", cap.putType, cap.putBody)
+		}
+	}
+}
+
+func TestPandocRenderAssignmentParameters(t *testing.T) {
+	c, cap := newRenderClient(t)
+	rec := &renderRecorder{body: []byte("render-png")}
+	c.lookupOp = func(op, from, to string) (convert.Converter, bool) {
+		if op != convert.OperationRender || from != "md" || to != "png" {
+			return nil, false
+		}
+		return rec, true
+	}
+	bad := []json.RawMessage{
+		json.RawMessage(`{"size":256}`),
+		json.RawMessage(`{"standalone":true}`),
+		json.RawMessage(`{"toc":true}`),
+		json.RawMessage(`{"number_sections":true}`),
+		json.RawMessage(`{"section_divs":true}`),
+		json.RawMessage(`{"wrap":"none"}`),
+	}
+	for i, params := range bad {
+		if err := c.runAssignment(context.Background(), renderAssignment(c, fmt.Sprintf("bad-%d", i), params), controlJSON{}); err != nil {
+			t.Fatal(err)
+		}
+		if rec.called != 0 || cap.gets != 0 || cap.puts != 0 {
+			t.Fatalf("called %d gets %d puts %d", rec.called, cap.gets, cap.puts)
+		}
+		if len(cap.fails) != i+1 {
+			t.Fatalf("fails %d", len(cap.fails))
+		}
+		body := cap.fails[i]
+		if !bytes.Contains(body, []byte(`"protocol_version":2`)) || !bytes.Contains(body, []byte(`"engine_code":"engine_error"`)) || !bytes.Contains(body, []byte(`"message":"assignment"`)) {
+			t.Fatalf("fail body %s", body)
+		}
+	}
+	for i, params := range []json.RawMessage{nil, json.RawMessage("null"), json.RawMessage("{}")} {
+		rec.opts = map[string]any{"sentinel": true}
+		if err := c.runAssignment(context.Background(), renderAssignment(c, fmt.Sprintf("empty-%d", i), params), controlJSON{}); err != nil {
+			t.Fatal(err)
+		}
+		if rec.opts != nil {
+			t.Fatalf("opts %#v", rec.opts)
+		}
+	}
+	if rec.called != 3 {
+		t.Fatalf("called %d", rec.called)
 	}
 }
