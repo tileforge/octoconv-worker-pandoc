@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"html"
 	"image"
 	"image/color"
 	_ "image/gif"
@@ -391,14 +392,46 @@ func pandocRemoteSrc(src string) bool {
 }
 
 func pandocResolveImage(src, htmlDir string) (string, error) {
-	src = strings.TrimSpace(src)
-	if src == "" {
+	src = pandocUnescapeSrc(strings.TrimSpace(src))
+	if src == "" || strings.Contains(src, "\x00") {
 		return "", fmt.Errorf("image src")
 	}
 	if filepath.IsAbs(src) {
 		return filepath.Clean(src), nil
 	}
 	return filepath.Clean(filepath.Join(htmlDir, src)), nil
+}
+
+func pandocUnescapeSrc(src string) string {
+	src = html.UnescapeString(src)
+	var b strings.Builder
+	b.Grow(len(src))
+	for i := 0; i < len(src); i++ {
+		if src[i] != '%' || i+2 >= len(src) || !pandocIsHex(src[i+1]) || !pandocIsHex(src[i+2]) {
+			b.WriteByte(src[i])
+			continue
+		}
+		b.WriteByte(pandocHex(src[i+1])<<4 | pandocHex(src[i+2]))
+		i += 2
+	}
+	return b.String()
+}
+
+func pandocIsHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func pandocHex(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10
+	default:
+		return 0
+	}
 }
 
 func pandocInside(path, dir string) bool {

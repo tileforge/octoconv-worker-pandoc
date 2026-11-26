@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"image"
 	"image/color"
 	"image/gif"
@@ -1310,6 +1311,58 @@ func writeRaster(path string, encode func(io.Writer, image.Image) error) error {
 		return err
 	}
 	return closeErr
+}
+
+func TestPandocRenderEscapedImageSrc(t *testing.T) {
+	base := t.TempDir()
+	in := filepath.Join(base, "in.md")
+	out := filepath.Join(base, "out.png")
+	if err := os.WriteFile(in, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ampDir := filepath.Join(base, "a&b")
+	if err := os.Mkdir(ampDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ampImg := filepath.Join(ampDir, "pixel.png")
+	if err := writeSolid(ampImg, 1, 1, color.NRGBA{0, 0, 0, 255}, nil); err != nil {
+		t.Fatal(err)
+	}
+	spaceDir := filepath.Join(base, "a b")
+	if err := os.Mkdir(spaceDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spaceImg := filepath.Join(spaceDir, "100%.png")
+	if err := writeSolid(spaceImg, 1, 1, color.NRGBA{0, 0, 0, 255}, nil); err != nil {
+		t.Fatal(err)
+	}
+	cases := []string{
+		html.EscapeString(ampImg),
+		strings.ReplaceAll(spaceImg, " ", "%20"),
+	}
+	for _, src := range cases {
+		weasy := 0
+		c, _ := newScripted(func(_ context.Context, engine string, args []string) error {
+			switch engine {
+			case "pandoc":
+				page := "<img\nsrc=\"" + src + "\" />\n"
+				return os.WriteFile(argAfter(args, "-o"), []byte(page), 0o600)
+			case "weasyprint":
+				weasy++
+				return os.WriteFile(args[len(args)-1], []byte("%PDF-1.4\n"), 0o600)
+			case "pdftoppm":
+				return contentPage(args[len(args)-1], 256)
+			default:
+				return fmt.Errorf("unexpected %s", engine)
+			}
+		})
+		if err := c.Convert(context.Background(), in, out, map[string]any{"size": 256}); err != nil {
+			t.Fatal(err)
+		}
+		if weasy != 1 {
+			t.Fatalf("weasyprint %d for %s", weasy, src)
+		}
+	}
 }
 
 func TestPandocImgSrcsKeepsByteOffsets(t *testing.T) {
