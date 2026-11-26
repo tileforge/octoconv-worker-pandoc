@@ -1,11 +1,16 @@
 package convert
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
 	"image"
 	"image/color"
+	_ "image/gif"
+	_ "image/jpeg"
 	"image/png"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -320,8 +325,64 @@ func pandocRenderImages(htmlPath, jobDir string) error {
 		if !pandocInside(eval, jobRoot) {
 			return fmt.Errorf("image %s", src)
 		}
+		if err := pandocDecodeImage(eval); err != nil {
+			return fmt.Errorf("image %s", src)
+		}
 	}
 	return nil
+}
+
+func pandocDecodeImage(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	head := make([]byte, 512)
+	n, err := f.Read(head)
+	if n == 0 {
+		return fmt.Errorf("image")
+	}
+	if err != nil && err != io.EOF {
+		return err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if pandocMarkup(head[:n]) {
+		return pandocSVGRoot(f)
+	}
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil || cfg.Width < 1 || cfg.Height < 1 {
+		return fmt.Errorf("image")
+	}
+	return nil
+}
+
+func pandocMarkup(head []byte) bool {
+	if bytes.HasPrefix(head, []byte{0xEF, 0xBB, 0xBF}) {
+		head = head[3:]
+	}
+	head = bytes.TrimLeft(head, " \t\r\n")
+	return bytes.HasPrefix(head, []byte("<"))
+}
+
+func pandocSVGRoot(r io.Reader) error {
+	dec := xml.NewDecoder(r)
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return fmt.Errorf("image")
+		}
+		start, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		if start.Name.Local != "svg" {
+			return fmt.Errorf("image")
+		}
+		return nil
+	}
 }
 
 func pandocRemoteSrc(src string) bool {
@@ -348,8 +409,18 @@ func pandocInside(path, dir string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
+func pandocASCIILower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c - 'A' + 'a'
+		}
+	}
+	return string(b)
+}
+
 func pandocImgSrcs(html string) []string {
-	lower := strings.ToLower(html)
+	lower := pandocASCIILower(html)
 	var srcs []string
 	for i := 0; i < len(lower); {
 		j := strings.Index(lower[i:], "<img")
@@ -379,8 +450,8 @@ func pandocNameChar(b byte) bool {
 }
 
 func pandocAttr(tag, name string) (string, bool) {
-	lower := strings.ToLower(tag)
-	key := strings.ToLower(name)
+	lower := pandocASCIILower(tag)
+	key := pandocASCIILower(name)
 	for i := 0; i < len(lower); {
 		j := strings.Index(lower[i:], key)
 		if j < 0 {

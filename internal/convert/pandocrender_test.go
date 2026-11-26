@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/gif"
+	"image/jpeg"
 	"image/png"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -1198,6 +1201,124 @@ func TestPandocRenderInheritsInputLimit(t *testing.T) {
 		t.Fatalf("err %v calls %d", err, calls)
 	}
 	absentOutput(t, out)
+}
+
+func TestPandocRenderImageDecode(t *testing.T) {
+	broken := func(t *testing.T, name string, body []byte) {
+		t.Helper()
+		dir := t.TempDir()
+		in := filepath.Join(dir, "in.md")
+		out := filepath.Join(dir, "out.png")
+		if err := os.WriteFile(in, []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		imgPath := filepath.Join(dir, name)
+		if err := os.WriteFile(imgPath, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		precreate(t, out)
+		weasy := 0
+		c, _ := newScripted(func(_ context.Context, engine string, args []string) error {
+			switch engine {
+			case "pandoc":
+				html := "<img\nsrc=\"" + imgPath + "\" />\n"
+				return os.WriteFile(argAfter(args, "-o"), []byte(html), 0o600)
+			case "weasyprint":
+				weasy++
+				return nil
+			default:
+				return fmt.Errorf("unexpected %s", engine)
+			}
+		})
+		if err := c.Convert(context.Background(), in, out, map[string]any{"size": 256}); err == nil {
+			t.Fatal("nil error")
+		}
+		if weasy != 0 {
+			t.Fatalf("weasyprint %d", weasy)
+		}
+		absentOutput(t, out)
+	}
+	broken(t, "broken.png", []byte("not an image"))
+	broken(t, "page.html", []byte("<html></html>\n"))
+
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.md")
+	out := filepath.Join(dir, "out.png")
+	if err := os.WriteFile(in, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pngPath := filepath.Join(dir, "pixel.png")
+	if err := writeSolid(pngPath, 1, 1, color.NRGBA{0, 0, 0, 255}, nil); err != nil {
+		t.Fatal(err)
+	}
+	jpgPath := filepath.Join(dir, "pixel.jpg")
+	if err := writeRaster(jpgPath, jpegEncode); err != nil {
+		t.Fatal(err)
+	}
+	gifPath := filepath.Join(dir, "pixel.gif")
+	if err := writeRaster(gifPath, gifEncode); err != nil {
+		t.Fatal(err)
+	}
+	svgPath := filepath.Join(dir, "mark.svg")
+	if err := os.WriteFile(svgPath, []byte("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"></svg>\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, imgPath := range []string{pngPath, jpgPath, gifPath, svgPath} {
+		weasy := 0
+		c, _ := newScripted(func(_ context.Context, engine string, args []string) error {
+			switch engine {
+			case "pandoc":
+				html := "<img\nsrc=\"" + imgPath + "\" />\n"
+				return os.WriteFile(argAfter(args, "-o"), []byte(html), 0o600)
+			case "weasyprint":
+				weasy++
+				return os.WriteFile(args[len(args)-1], []byte("%PDF-1.4\n"), 0o600)
+			case "pdftoppm":
+				return contentPage(args[len(args)-1], 256)
+			default:
+				return fmt.Errorf("unexpected %s", engine)
+			}
+		})
+		if err := c.Convert(context.Background(), in, out, map[string]any{"size": 256}); err != nil {
+			t.Fatal(err)
+		}
+		if weasy != 1 {
+			t.Fatalf("weasyprint %d", weasy)
+		}
+		assertNotAllWhite(t, out)
+	}
+}
+
+func jpegEncode(w io.Writer, img image.Image) error {
+	return jpeg.Encode(w, img, nil)
+}
+
+func gifEncode(w io.Writer, img image.Image) error {
+	return gif.Encode(w, img, nil)
+}
+
+func writeRaster(path string, encode func(io.Writer, image.Image) error) error {
+	img := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	img.SetNRGBA(0, 0, color.NRGBA{0, 0, 0, 255})
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	err = encode(f, img)
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
+func TestPandocImgSrcsKeepsByteOffsets(t *testing.T) {
+	prefix := strings.Repeat("\u023A", 512)
+	html := prefix + "<IMG\n SRC='pixel.png'>"
+	srcs := pandocImgSrcs(html)
+	if len(srcs) != 1 || srcs[0] != "pixel.png" {
+		t.Fatalf("%#v", srcs)
+	}
 }
 
 func fTruncate(path string, size int64) error {
